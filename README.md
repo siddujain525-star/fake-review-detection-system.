@@ -31,6 +31,6 @@ Data Preprocessing: Removal of stopwords, punctuation, and lemmatization.
 
 Feature Engineering: Extracting text length, punctuation density, and sentiment polarity.
 
-Model Selection: Comparison between Multinomial Naive Bayes, Logistic Regression, and [Your chosen model, e.g., Random Forest/SVM].
+Model Selection: Comparison between Multinomial Naive Bayes, Logistic Regression, and [Random Forest].
 
-Evaluation: Achieving an accuracy of XX% [update this] with high precision to avoid flagging real customers.
+Evaluation: Achieving an accuracy of 70.9% with high precision to avoid flagging real customers.

@@ -1,8 +1,8 @@
-streamlit
-pandas
-joblib
+streamlit==1.56.0
+pandas==3.0.2
+joblib==1.5.3
 scikit-learn==1.6.1
-playwright
-lime
-beautifulsoup4
-nltk
+playwright==1.58.0
+lime==0.2.0.1
+beautifulsoup4==4.14.3
+nltk==3.9.4

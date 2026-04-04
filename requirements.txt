@@ -1,11 +1,8 @@
 streamlit
-joblib
-numpy
 pandas
-scikit-learn
-lime
+joblib
+scikit-learn==1.6.1
 playwright
-nltk
-undetected-chromedriver
 beautifulsoup4
-selenium
+nltk
+lime

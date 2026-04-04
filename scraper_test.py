@@ -3,8 +3,8 @@ import os
 import subprocess
 from playwright.sync_api import sync_playwright
 
-def scrape_amazon_reviews(url, max_reviews=10):
-    # 1. Ensure Playwright is installed on the server
+def scrape_amazon_reviews(product_name, max_reviews=10):
+    # 1. Ensure Playwright is installed
     try:
         if not os.path.exists("/tmp/playwright_installed"):
             subprocess.run(["playwright", "install", "chromium"], check=True)
@@ -14,44 +14,60 @@ def scrape_amazon_reviews(url, max_reviews=10):
         print(f"Playwright install note: {e}")
 
     with sync_playwright() as p:
-        # Launch browser in headless mode
         browser = p.chromium.launch(headless=True)
         
-        # 2. Mimic a real laptop browser (Crucial to avoid blocks)
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            viewport={'width': 1920, 'height': 1080},
-            extra_http_headers={"Accept-Language": "en-US,en;q=0.9"}
+            viewport={'width': 1920, 'height': 1080}
         )
         page = context.new_page()
         
-        reviews = []
+        scraped_data = []
         try:
-            # 3. Use 'domcontentloaded' to speed up initial hit
-            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            # 2. SEARCH: Instead of going to a URL, go to the Search Results
+            search_query = product_name.replace(" ", "+")
+            search_url = f"https://www.amazon.in/s?k={search_query}"
+            page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
             
-            # 4. Scroll down to trigger lazy-loaded reviews (Very important)
-            page.evaluate("window.scrollBy(0, 1500)")
-            time.sleep(3) 
+            # 3. CLICK: Find the first product that isn't an ad (Sponsored)
+            # This selector targets the first organic product title
+            first_product_selector = "h2 a.a-link-normal.s-line-clamp-2"
+            page.wait_for_selector(first_product_selector)
+            page.click(first_product_selector)
+            
+            # Wait for the product page to load
+            page.wait_for_load_state("domcontentloaded")
+            time.sleep(2)
 
-            # 5. Use multiple possible selectors (Amazon changes these often)
-            # This checks for the main review body and common fallbacks
-            selectors = [
-                "[data-hook='review-body']", 
-                ".review-text-content", 
-                "span.a-size-base.review-text"
-            ]
+            # 4. SCROLL & FIND REVIEWS:
+            page.evaluate("window.scrollBy(0, 2000)") 
+            time.sleep(2)
             
-            # Combine selectors for a "wide net" search
-            combined_selector = ", ".join(selectors)
-            elements = page.query_selector_all(combined_selector)
+            # Target the individual review containers
+            review_containers = page.query_selector_all(".review")
             
-            for el in elements:
-                text = el.inner_text().strip()
-                # Filter out very short text (likely buttons or labels)
-                if len(text) > 15 and text not in reviews:
-                    reviews.append(text)
-                if len(reviews) >= max_reviews:
+            for container in review_containers:
+                # Extract Text
+                text_el = container.query_selector("[data-hook='review-body']")
+                # Extract Rating (Amazon uses "X.0 out of 5 stars")
+                rating_el = container.query_selector(".a-icon-alt")
+                
+                if text_el and rating_el:
+                    review_text = text_el.inner_text().strip()
+                    rating_text = rating_el.inner_text().split()[0] # Get "4.0"
+                    
+                    try:
+                        rating_val = float(rating_text)
+                    except:
+                        rating_val = 0.0
+
+                    if len(review_text) > 15:
+                        scraped_data.append({
+                            "text": review_text,
+                            "rating": rating_val
+                        })
+                
+                if len(scraped_data) >= max_reviews:
                     break
                     
         except Exception as e:
@@ -59,4 +75,4 @@ def scrape_amazon_reviews(url, max_reviews=10):
         finally:
             browser.close()
             
-        return reviews
+        return scraped_data

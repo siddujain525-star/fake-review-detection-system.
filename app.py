@@ -12,18 +12,55 @@ from sklearn.pipeline import make_pipeline
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="AI Review Analyser", layout="wide", page_icon="🛡️")
 
-# --- 1. LOAD MODEL & ASSETS ---
-@st.cache_resource
-def load_model():
-    # Update path if your model is in a different folder
-    return joblib.load("model/fake_review_model.pkl")
+import os
 
+# --- 1. LOAD MODEL & ASSETS ---
+# This ensures we find the folder regardless of where the server runs from
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(BASE_DIR, "model", "fake_review_model.pkl")
+
+@st.cache_resource
+def load_model_assets():
+    if not os.path.exists(MODEL_PATH):
+        # This will show up in your Streamlit logs
+        st.error(f"File not found: {MODEL_PATH}")
+        return None, None
+
+    try:
+        # Load the saved object
+        loaded_data = joblib.load(MODEL_PATH)
+        
+        # DEBUG: If your pkl has (model, vectorizer) as a tuple/list
+        if isinstance(loaded_data, (tuple, list)) and len(loaded_data) == 2:
+            return loaded_data[0], loaded_data[1]
+        
+        # If your pkl IS the model and you load vectorizer separately, 
+        # or if it's a single pipeline object:
+        return loaded_data, None 
+        
+    except Exception as e:
+        st.error(f"Internal Load Error: {e}")
+        return None, None
+
+# Initialize
+model, vectorizer = load_model_assets()
+
+# If loading failed, stop the app gracefully so you can see the error
+if model is None:
+    st.warning("⚠️ Model could not be initialized. Check your 'model/' folder on GitHub.")
+    st.stop()
+
+# Create the pipeline for LIME
+# If your 'model' already includes the vectorizer (a scikit-learn Pipeline), 
+# you don't need make_pipeline.
 try:
-    model, vectorizer = load_model()
-    # Create a pipeline for LIME and easier predicting
-    c = make_pipeline(vectorizer, model)
+    if vectorizer is not None:
+        c = make_pipeline(vectorizer, model)
+    else:
+        # Assuming the loaded model is already a Pipeline
+        c = model 
 except Exception as e:
-    st.error(f"Model Load Error: {e}. Check if 'model/fake_review_model.pkl' exists.")
+    st.error(f"Pipeline Creation Error: {e}")
     st.stop()
 
 # --- 2. CORE ANALYSIS ENGINE ---

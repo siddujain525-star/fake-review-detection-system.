@@ -3,17 +3,18 @@ import joblib
 import numpy as np
 import pandas as pd
 import os
+import warnings
 from src.preprocess import clean_text
 from scraper_test import scrape_amazon_reviews
-from lime.lime_text import LimeTextExplainer
-import streamlit.components.v1 as components
 from sklearn.pipeline import make_pipeline
 
-# --- PAGE CONFIG ---
+# --- 1. VERSION GUARD & CONFIG ---
+# Suppress the InconsistentVersionWarning to prevent logs from bloating
+from sklearn.exceptions import InconsistentVersionWarning
+warnings.filterwarnings("ignore", category=InconsistentVersionWarning)
+
 st.set_page_config(page_title="AI Review Analyser", layout="wide", page_icon="🛡️")
 
-# --- 1. CLOUD-SAFE LOAD MODEL & ASSETS ---
-# Absolute pathing is required because the working directory on Streamlit Cloud can be inconsistent
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(BASE_DIR, "model", "fake_review_model.pkl")
 
@@ -24,13 +25,18 @@ def load_model_assets():
         st.stop()
 
     try:
+        # Load with a fallback for version differences
         loaded_data = joblib.load(MODEL_PATH)
-        # Check if pkl contains (model, vectorizer) tuple or single pipeline
+        
         if isinstance(loaded_data, (tuple, list)) and len(loaded_data) == 2:
-            return loaded_data[0], loaded_data[1]
-        return loaded_data, None 
+            model_obj, vectorizer_obj = loaded_data[0], loaded_data[1]
+        else:
+            model_obj, vectorizer_obj = loaded_data, None 
+            
+        return model_obj, vectorizer_obj
     except Exception as e:
         st.error(f"Internal Load Error: {e}")
+        st.info("Tip: If you see a 'ModuleNotFoundError', ensure scikit-learn version matches your training env.")
         st.stop()
 
 model, vectorizer = load_model_assets()
@@ -53,20 +59,23 @@ def run_analysis(review_text, rating=None):
     if len(words) == 0:
         return None
 
+    # Get probability scores
     probs = c.predict_proba([cleaned])[0]
     prediction_index = np.argmax(probs) # 0 = Fake (CG), 1 = Real (OR)
     ai_real_confidence = probs[1] * 100
     
+    # Calculate unique word ratio to catch simple bot repetition
     unique_ratio = len(set(words)) / len(words)
     is_fake = (prediction_index == 0) or (unique_ratio < 0.15)
     
     # BEHAVIORAL ANALYSIS: Detecting "Intentional Misinformation"
-    # Flags human-written text that has a mismatch between sentiment and rating
     intentional_malice = False
     if rating is not None:
         malicious_keywords = ['bad', 'worst', 'scam', 'fake', 'trash', 'waste', 'cheap', 'fraud']
+        # Flag 1: AI says it's real, but user gave 1-star and used heavy negative bias keywords
         if prediction_index == 1 and rating <= 2.0 and any(kw in cleaned.lower() for kw in malicious_keywords):
             intentional_malice = True
+        # Flag 2: 5-star rating but text contains "waste of money"
         if prediction_index == 1 and rating >= 4.5 and "waste" in cleaned.lower():
             intentional_malice = True
 
@@ -79,7 +88,7 @@ def run_analysis(review_text, rating=None):
 
 # --- 3. UI LAYOUT ---
 st.title("🛡️ AI Product Integrity System")
-st.markdown("Enter a product name to analyze live reviews for bot-spam and intentional misinformation.")
+st.markdown("Analyze live reviews for bot-spam and intentional misinformation.")
 
 tab1, tab2 = st.tabs(["📝 Single Review Check", "🌐 Global Product Analysis"])
 
@@ -90,24 +99,39 @@ with tab1:
         if manual_review:
             res = run_analysis(manual_review)
             if res:
-                if res["is_fake"]: st.error("### 🚩 VERDICT: FAKE")
-                else: st.success("### ✅ VERDICT: GENUINE")
-                st.metric("AI Confidence", f"{res['confidence']:.1f}%")
+                if res["is_fake"]: 
+                    st.error("### 🚩 VERDICT: FAKE / BOT GENERATED")
+                else: 
+                    st.success("### ✅ VERDICT: GENUINE")
+                
+                col_a, col_b = st.columns(2)
+                col_a.metric("AI Confidence", f"{res['confidence']:.1f}%")
+                col_b.metric("Intentional Malice", "Yes" if res['intentional'] else "No")
 
 with tab2:
-    st.subheader("Live Multi-Site Search")
-    product_name = st.text_input("Enter Product Name (e.g. 'Logitech Mouse'):", key="p_name")
+    st.subheader("Live Amazon Search")
+    product_name = st.text_input("Enter Product Name (e.g. 'Logitech G502'):", key="p_name")
 
     if st.button("Search & Analyze Across Platforms", key="search_btn"):
         if product_name:
+            # Placeholder for debugging screenshot
+            debug_placeholder = st.empty()
+            
             with st.spinner(f"Scraping Amazon for '{product_name}'..."):
                 scraped_data = scrape_amazon_reviews(product_name)
             
+            # --- SCRAPING ERROR HANDLING ---
             if not scraped_data:
-                st.error("No reviews found. Amazon may be blocking the request.")
+                st.error("🚨 Scraping Failed or Blocked.")
+                st.warning("Amazon likely detected a bot. Check the image below for CAPTCHA or 'Robot Check'.")
+                
+                # Check for the debug screenshot generated by scraper_test.py
                 if os.path.exists("bot_check.png"):
-                    st.image("bot_check.png", caption="Last Browser View: Check for CAPTCHA")
+                    st.image("bot_check.png", caption="Last Browser State (Debugging)")
+                else:
+                    st.info("No debug screenshot available. Ensure your scraper saves 'bot_check.png' on failure.")
             else:
+                # --- DATA PROCESSING ---
                 total = len(scraped_data)
                 fakes = 0
                 malice = 0
@@ -126,14 +150,18 @@ with tab2:
                         "Behavioral Alert": "⚠️ MALICIOUS" if analysis['intentional'] else "Normal"
                     })
 
+                # --- RESULTS DISPLAY ---
                 st.divider()
                 st.header(f"Trust Report for: {product_name}")
                 col1, col2, col3 = st.columns(3)
+                
+                auth_score = int(((total - fakes) / total) * 100) if total > 0 else 0
+                
                 col1.metric("Reviews Analyzed", total)
-                col2.metric("Authenticity Score", f"{int(((total-fakes)/total)*100)}%")
+                col2.metric("Authenticity Score", f"{auth_score}%")
                 col3.metric("Malicious Intent Found", malice)
 
                 st.subheader("📑 Detailed Breakdown")
-                st.table(pd.DataFrame(table_rows))
+                st.dataframe(pd.DataFrame(table_rows), use_container_width=True)
         else:
             st.warning("Please enter a product name.")

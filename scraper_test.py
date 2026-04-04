@@ -9,76 +9,71 @@ def scrape_amazon_reviews(product_name, max_reviews=10):
     try:
         if not os.path.exists("/tmp/playwright_installed"):
             subprocess.run(["playwright", "install", "chromium"], check=True)
-            with open("/tmp/playwright_installed", "w") as f:
-                f.write("done")
-    except Exception as e:
-        print(f"Playwright install note: {e}")
+            with open("/tmp/playwright_installed", "w") as f: f.write("done")
+    except: pass
 
     with sync_playwright() as p:
-        # Launching with a slower 'slow_mo' helps bypass simple bot checks
-        browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
+        # Launch with specific arguments for Linux servers
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-gpu"])
         
+        # Use a very specific, modern User-Agent
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            viewport={'width': 1280, 'height': 720}
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
         )
         page = context.new_page()
         
         scraped_data = []
         try:
-            # 1. Search Logic
-            search_query = product_name.replace(" ", "+")
-            search_url = f"https://www.amazon.in/s?k={search_query}"
+            # 1. Search with a timeout and 'commit' load state
+            search_url = f"https://www.amazon.in/s?k={product_name.replace(' ', '+')}"
+            page.goto(search_url, wait_until="domcontentloaded")
             
-            # Use 'networkidle' to ensure the page is fully loaded
-            page.goto(search_url, wait_until="networkidle", timeout=60000)
-            time.sleep(random.uniform(2, 4))
+            # 2. Wait for ANY link inside an H2 (the most generic product link selector)
+            # This is less likely to time out than the specific class name
+            page.wait_for_selector("h2 a", timeout=15000)
             
-            # 2. Click the first product (Organic, not sponsored)
-            # This targets the first link in a search result heading
-            first_product = page.locator('div[data-component-type="s-search-result"] h2 a').first
-            if first_product.count() > 0:
-                first_product.click()
-            else:
-                # Fallback if the layout is different
-                page.click("h2 a")
+            # Click the first organic result
+            links = page.query_selector_all("h2 a")
+            # Skip the first 2 links if they are sponsored ads
+            target_link = links[2] if len(links) > 2 else links[0]
+            target_link.click()
+            
+            page.wait_for_load_state("domcontentloaded")
+            time.sleep(random.uniform(2, 4)) # Human-like pause
 
-            page.wait_for_load_state("networkidle")
-            time.sleep(2)
-
-            # 3. Scroll to reviews
-            page.evaluate("window.scrollBy(0, 1500)")
+            # 3. Scroll and grab reviews using multiple selectors
+            page.evaluate("window.scrollBy(0, 2000)")
             time.sleep(2)
             
-            # 4. Extract Review Blocks
-            # Amazon often uses 'customer_review' in the ID or the class '.review'
-            review_elements = page.query_selector_all(".review")
+            # Wide net for review text
+            review_containers = page.query_selector_all(".review")
             
-            for el in review_elements:
-                text_el = el.query_selector("[data-hook='review-body']")
-                rating_el = el.query_selector(".a-icon-alt")
+            for container in review_containers:
+                # Amazon's review body hook
+                text_el = container.query_selector("[data-hook='review-body']")
+                # Amazon's star rating hook
+                star_el = container.query_selector(".a-icon-alt")
                 
-                if text_el and rating_el:
-                    review_text = text_el.inner_text().strip()
-                    # Rating looks like "5.0 out of 5 stars"
-                    rating_raw = rating_el.inner_text().split()[0]
+                if text_el:
+                    rev_text = text_el.inner_text().strip()
+                    rev_rating = 0.0
                     
-                    try:
-                        rating_val = float(rating_raw)
-                    except:
-                        rating_val = 0.0
+                    if star_el:
+                        try:
+                            # Extracts '4.0' from '4.0 out of 5 stars'
+                            rev_rating = float(star_el.inner_text().split()[0])
+                        except: pass
 
-                    if len(review_text) > 20:
-                        scraped_data.append({
-                            "text": review_text,
-                            "rating": rating_val
-                        })
+                    if len(rev_text) > 20:
+                        scraped_data.append({"text": rev_text, "rating": rev_rating})
                 
                 if len(scraped_data) >= max_reviews:
                     break
                     
         except Exception as e:
-            print(f"Scraping error: {e}")
+            # If it fails, take a screenshot so you can see the CAPTCHA in your repo
+            page.screenshot(path="error_debug.png")
+            print(f"Scrape Error: {e}")
         finally:
             browser.close()
             

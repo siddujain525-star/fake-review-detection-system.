@@ -2,3 +2,5 @@ chromium
 chromium-driver
 libnss3
 libnspr4
+libgbm1
+asound2

@@ -71,12 +71,72 @@ with tab1:
             else: st.success("✅ VERDICT: REAL")
             # ... (LIME code here remains the same as your original)
 
-# --- TAB 2: LIVE PRODUCT SEARCH (THE MAIN UPDATE) ---
+import pandas as pd # Ensure this is imported at the top
+
+# --- TAB 2: LIVE PRODUCT SEARCH ---
 with tab2:
     st.subheader("🌐 Global Product Analysis")
-    # Change: Now asking for Product Name
-    product_name = st.text_input("Enter Product Name (e.g. 'iPhone 15 Pro' or 'Boat Airdopes')", key="p_name_input")
+    product_name = st.text_input("Enter Product Name (e.g. 'iPhone 15 Pro')", key="p_name_input")
 
     if st.button("Search & Analyze Across Platforms", key="search_btn"):
         if product_name:
-            with st.spinner(f"Searching and analyzing reviews for '{product_name
+            with st.spinner(f"Searching and analyzing reviews for '{product_name}'..."):
+                # Calls your updated Playwright scraper
+                scraped_data = scrape_amazon_reviews(product_name) 
+            
+            if not scraped_data:
+                st.error("No reviews found. Try a more specific name or check your internet.")
+            else:
+                total = len(scraped_data)
+                fakes = 0
+                intentional_hits = 0
+                detailed_results = []
+
+                for item in scraped_data:
+                    # Run analysis with text AND rating
+                    res = run_analysis(item['text'], rating=item.get('rating'))
+                    
+                    if res["is_fake"]: fakes += 1
+                    if res["intentional"]: intentional_hits += 1
+                    
+                    # Store data for the table
+                    detailed_results.append({
+                        "Star Rating": f"{item.get('rating', 0)} ⭐",
+                        "Review Snippet": item['text'][:100] + "...",
+                        "AI Verdict": "🚩 FAKE" if res["is_fake"] else "✅ REAL",
+                        "Behavioral Alert": "⚠️ Intentional Malice" if res["intentional"] else "Normal"
+                    })
+
+                # --- DASHBOARD METRICS ---
+                st.divider()
+                st.header(f"Trust Report for: {product_name}")
+                
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Reviews Analyzed", total)
+                col2.metric("Authenticity Score", f"{int(((total-fakes)/total)*100)}%")
+                col3.metric("Malicious Intent Found", intentional_hits)
+
+                # --- DATA DISPLAY ---
+                st.subheader("📑 Detailed Breakdown")
+                df = pd.DataFrame(detailed_results)
+                
+                # Apply styling to highlight suspicious rows
+                def highlight_suspicious(val):
+                    if '🚩' in str(val) or '⚠️' in str(val):
+                        return 'background-color: #4b1a1a' # Dark red for dark mode
+                    return ''
+
+                st.table(df) # Or st.dataframe(df) for interactive sorting
+
+                # --- FINAL VERDICT ---
+                if intentional_hits > (total * 0.2):
+                    st.error("### 🚫 VERDICT: HIGH MANIPULATION DETECTED")
+                    st.write("This product is likely being targeted by intentional negative reviews or fake bot accounts.")
+                elif fakes > (total * 0.4):
+                    st.warning("### ⚠️ VERDICT: UNTRUSTWORTHY DATA")
+                    st.write("Nearly half of the reviews match patterns of non-human generation.")
+                else:
+                    st.success("### ✅ VERDICT: HIGH INTEGRITY")
+                    st.write("Most reviews appear organic and written by actual users.")
+        else:
+            st.warning("Please enter a product name.")

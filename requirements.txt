@@ -1,6 +1,6 @@
-streamlit==1.56.0
+streamlit==1.32.0
 scikit-learn==1.8.0
 joblib
 pandas
 numpy
-playwright
+playwright==1.42.0

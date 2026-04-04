@@ -4,68 +4,95 @@ import subprocess
 import random
 from playwright.sync_api import sync_playwright
 
-def scrape_amazon_reviews(product_name, max_reviews=10):
+def scrape_amazon_reviews(product_name, max_reviews=100):
+    # Ensure Playwright browsers are installed (Only for Streamlit Cloud)
     try:
-        if not os.path.exists("/tmp/playwright_installed"):
+        if not os.path.exists("/home/appuser/.cache/ms-playwright"):
             subprocess.run(["playwright", "install", "chromium"], check=True)
-            with open("/tmp/playwright_installed", "w") as f: f.write("done")
-    except: pass
+    except: 
+        pass
 
     with sync_playwright() as p:
-        # slow_mo helps bypass simple bot detection
-        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+        # 1. Launch with extra arguments to bypass headless detection
+        browser = p.chromium.launch(
+            headless=True, 
+            args=[
+                "--no-sandbox", 
+                "--disable-setuid-sandbox", 
+                "--disable-blink-features=AutomationControlled"
+            ]
         )
-        page = context.new_page()
         
+        # 2. Use a high-quality User-Agent and viewport
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            viewport={'width': 1920, 'height': 1080}
+        )
+        
+        page = context.new_page()
         scraped_data = []
+
         try:
+            # 3. Direct Search URL
             search_url = f"https://www.amazon.in/s?k={product_name.replace(' ', '+')}"
-            page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
+            page.goto(search_url, wait_until="networkidle", timeout=60000)
             
-            # --- FIX: Generic Product Selector ---
-            # Instead of specific classes, we look for any link inside an H2 in the search results
-            try:
-                page.wait_for_selector("h2 a", timeout=15000)
-                product_links = page.query_selector_all("h2 a")
-                
-                # Pick the first one that looks like a product link
-                target_link = product_links[0]
-                for link in product_links[:3]: # Check first 3 to skip ads
-                    if "/dp/" in link.get_attribute("href"):
-                        target_link = link
-                        break
-                
-                target_link.click()
-            except Exception as e:
-                # If it fails, save a screenshot so you can see if it's a CAPTCHA
+            # Check for "Robot Check" (CAPTCHA)
+            if "robot" in page.title().lower() or "captcha" in page.content().lower():
                 page.screenshot(path="bot_check.png")
                 return []
 
-            page.wait_for_load_state("domcontentloaded")
+            # 4. Find the first product link
+            # We look for links containing '/dp/' (Standard Amazon Product URL format)
+            page.wait_for_selector("a[href*='/dp/']", timeout=15000)
+            product_links = page.query_selector_all("a[href*='/dp/']")
+            
+            if not product_links:
+                page.screenshot(path="bot_check.png")
+                return []
+
+            # Get the href of the first valid result and go there directly 
+            # (Clicking sometimes opens new tabs which breaks the script)
+            target_href = product_links[0].get_attribute("href")
+            if not target_href.startswith("http"):
+                target_href = "https://www.amazon.in" + target_href
+            
+            page.goto(target_href, wait_until="networkidle", timeout=60000)
             time.sleep(random.uniform(2, 4))
 
-            # Scroll to reviews
-            page.evaluate("window.scrollBy(0, 2000)")
-            time.sleep(2)
+            # 5. Extract reviews using multiple selector fallbacks
+            # Amazon often A/B tests different layouts
+            review_containers = page.query_selector_all("[data-hook='review']")
             
-            # Use multiple possible selectors for reviews
-            review_containers = page.query_selector_all(".review")
-            
+            if not review_containers:
+                # Try fallback selector
+                review_containers = page.query_selector_all(".review")
+
             for container in review_containers:
+                # Text content
                 text_el = container.query_selector("[data-hook='review-body']")
-                star_el = container.query_selector(".a-icon-alt")
+                # Star rating
+                star_el = container.query_selector("[data-hook='review-star-rating'], .a-icon-star")
                 
                 if text_el:
                     rev_text = text_el.inner_text().strip()
+                    # Clean up "Read more" or extra labels
+                    rev_text = rev_text.replace("Read more", "").strip()
+                    
                     rev_rating = 0.0
                     if star_el:
                         try:
-                            rev_rating = float(star_el.inner_text().split()[0])
-                        except: pass
+                            # Usually looks like "4.0 out of 5 stars"
+                            rating_str = star_el.inner_text() or star_el.get_attribute("class")
+                            # Extract the first number found
+                            import re
+                            match = re.search(r"(\d+\.\d+|\d+)", rating_str)
+                            if match:
+                                rev_rating = float(match.group(1))
+                        except: 
+                            pass
 
-                    if len(rev_text) > 20:
+                    if len(rev_text) > 10:
                         scraped_data.append({"text": rev_text, "rating": rev_rating})
                 
                 if len(scraped_data) >= max_reviews:
@@ -73,6 +100,7 @@ def scrape_amazon_reviews(product_name, max_reviews=10):
                     
         except Exception as e:
             print(f"Scrape Error: {e}")
+            page.screenshot(path="bot_check.png") # Diagnostic for Streamlit
         finally:
             browser.close()
             

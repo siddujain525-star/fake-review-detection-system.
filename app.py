@@ -1,142 +1,100 @@
-from scraper_test import scrape_amazon_reviews  # Ensure this function now accepts a NAME, not a URL
 import streamlit as st
 import joblib
 import numpy as np
+import pandas as pd
+import os
 from src.preprocess import clean_text
+from scraper_test import scrape_amazon_reviews
 from lime.lime_text import LimeTextExplainer
 import streamlit.components.v1 as components
 from sklearn.pipeline import make_pipeline
 
-st.set_page_config(page_title="AI Review Analyser", layout="wide")
+# --- PAGE CONFIG ---
+st.set_page_config(page_title="AI Review Analyser", layout="wide", page_icon="🛡️")
 
-# 1. Load Model
+# --- 1. LOAD MODEL & ASSETS ---
 @st.cache_resource
 def load_model():
+    # Update path if your model is in a different folder
     return joblib.load("model/fake_review_model.pkl")
 
 try:
     model, vectorizer = load_model()
+    # Create a pipeline for LIME and easier predicting
     c = make_pipeline(vectorizer, model)
 except Exception as e:
-    st.error(f"Model Load Error: {e}. Ensure 'model/fake_review_model.pkl' exists.")
+    st.error(f"Model Load Error: {e}. Check if 'model/fake_review_model.pkl' exists.")
+    st.stop()
 
-st.title("🛡️ AI Product Integrity System")
-
-# --- REUSABLE ANALYSIS FUNCTION ---
+# --- 2. CORE ANALYSIS ENGINE ---
 def run_analysis(review_text, rating=None):
     cleaned = clean_text(review_text)
     words = cleaned.split()
     
     if len(words) == 0:
-        return {"status": "Invalid", "is_fake": False}
+        return None
 
+    # AI Prediction
     probs = c.predict_proba([cleaned])[0]
-    prediction_index = np.argmax(probs)
-    ai_confidence = probs[1] * 100 # Prob of being "Real"
+    prediction_index = np.argmax(probs) # 0 = Fake (CG), 1 = Real (OR)
+    ai_real_confidence = probs[1] * 100
     
+    # Heuristics (Uniqueness & Length)
     unique_ratio = len(set(words)) / len(words)
-    avg_word_length = sum(len(word) for word in words) / len(words) if len(words) > 0 else 0
+    avg_word_len = sum(len(w) for w in words) / len(words)
 
-    # Hybrid Logic: AI Verdict + Heuristics
+    # Final Verdict Logic
+    # Flag as fake if AI says so OR if text is extremely repetitive
     is_fake = (prediction_index == 0) or (unique_ratio < 0.15)
     
-    # NEW: Intentional Misinformation Check (Behavioral Analysis)
-    intentional_flag = False
+    # --- BEHAVIORAL ANALYSIS (Intentional Misinformation) ---
+    intentional_malice = False
     if rating is not None:
-        # If AI says it's written naturally (Real), but it's 1-star and uses 'trash/scam' 
-        # it might be a competitor's intentional negative review.
-        if prediction_index == 1 and rating <= 1.5 and any(word in cleaned for word in ['bad', 'worst', 'scam']):
-            intentional_flag = True
+        malicious_keywords = ['bad', 'worst', 'scam', 'fake', 'trash', 'waste', 'cheap', 'fraud']
+        # Scenario: Human-written (Real) but 1-star rating with aggressive hate speech
+        if prediction_index == 1 and rating <= 2.0 and any(kw in cleaned.lower() for kw in malicious_keywords):
+            intentional_malice = True
+        # Scenario: Human-written (Real) but 5-star rating using 'waste' (Sarcasm)
+        if prediction_index == 1 and rating >= 4.5 and "waste" in cleaned.lower():
+            intentional_malice = True
 
     return {
         "is_fake": is_fake,
-        "intentional": intentional_flag,
-        "ai_confidence": ai_confidence,
+        "intentional": intentional_malice,
+        "confidence": ai_real_confidence,
         "unique_ratio": unique_ratio,
-        "avg_len": avg_word_length,
-        "prediction": prediction_index
+        "avg_word_len": avg_word_len,
+        "prediction_index": prediction_index,
+        "cleaned_text": cleaned
     }
 
-# --- UI LAYOUT TABS ---
-tab1, tab2 = st.tabs(["📝 Single Review Check", "🔍 Multi-Site Product Search"])
+# --- 3. UI HEADER ---
+st.title("🛡️ AI Product Integrity System")
+st.markdown("Detecting computer-generated spam and intentional human misinformation.")
 
-# TAB 1: Manual Check (Kept for your debugging)
+tab1, tab2 = st.tabs(["📝 Single Review Check", "🔍 Live Product Analysis"])
+
+# --- TAB 1: MANUAL INPUT ---
 with tab1:
-    st.subheader("Manual Analysis")
-    manual_review = st.text_area("Paste review here:", height=100, key="manual_area")
-    if st.button("Analyze", key="manual_btn"):
+    st.subheader("Analyze a Single Review")
+    manual_review = st.text_area("Paste a review here:", height=150, key="manual_input")
+    
+    if st.button("Analyze Review", key="manual_btn"):
         if manual_review:
             res = run_analysis(manual_review)
-            if res["is_fake"]: st.error("🚩 VERDICT: FAKE")
-            else: st.success("✅ VERDICT: REAL")
-            # ... (LIME code here remains the same as your original)
-
-import pandas as pd # Ensure this is imported at the top
-
-# --- TAB 2: LIVE PRODUCT SEARCH ---
-with tab2:
-    st.subheader("🌐 Global Product Analysis")
-    product_name = st.text_input("Enter Product Name (e.g. 'iPhone 15 Pro')", key="p_name_input")
-
-    if st.button("Search & Analyze Across Platforms", key="search_btn"):
-        if product_name:
-            with st.spinner(f"Searching and analyzing reviews for '{product_name}'..."):
-                # Calls your updated Playwright scraper
-                scraped_data = scrape_amazon_reviews(product_name) 
-            
-            if not scraped_data:
-                st.error("No reviews found. Try a more specific name or check your internet.")
-            else:
-                total = len(scraped_data)
-                fakes = 0
-                intentional_hits = 0
-                detailed_results = []
-
-                for item in scraped_data:
-                    # Run analysis with text AND rating
-                    res = run_analysis(item['text'], rating=item.get('rating'))
-                    
-                    if res["is_fake"]: fakes += 1
-                    if res["intentional"]: intentional_hits += 1
-                    
-                    # Store data for the table
-                    detailed_results.append({
-                        "Star Rating": f"{item.get('rating', 0)} ⭐",
-                        "Review Snippet": item['text'][:100] + "...",
-                        "AI Verdict": "🚩 FAKE" if res["is_fake"] else "✅ REAL",
-                        "Behavioral Alert": "⚠️ Intentional Malice" if res["intentional"] else "Normal"
-                    })
-
-                # --- DASHBOARD METRICS ---
-                st.divider()
-                st.header(f"Trust Report for: {product_name}")
+            if res:
+                col1, col2 = st.columns(2)
+                with col1:
+                    if res["is_fake"]:
+                        st.error("### 🚩 VERDICT: FAKE / SUSPICIOUS")
+                    else:
+                        st.success("### ✅ VERDICT: GENUINE")
                 
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Reviews Analyzed", total)
-                col2.metric("Authenticity Score", f"{int(((total-fakes)/total)*100)}%")
-                col3.metric("Malicious Intent Found", intentional_hits)
-
-                # --- DATA DISPLAY ---
-                st.subheader("📑 Detailed Breakdown")
-                df = pd.DataFrame(detailed_results)
+                with col2:
+                    st.metric("AI Real Confidence", f"{res['confidence']:.1f}%")
                 
-                # Apply styling to highlight suspicious rows
-                def highlight_suspicious(val):
-                    if '🚩' in str(val) or '⚠️' in str(val):
-                        return 'background-color: #4b1a1a' # Dark red for dark mode
-                    return ''
-
-                st.table(df) # Or st.dataframe(df) for interactive sorting
-
-                # --- FINAL VERDICT ---
-                if intentional_hits > (total * 0.2):
-                    st.error("### 🚫 VERDICT: HIGH MANIPULATION DETECTED")
-                    st.write("This product is likely being targeted by intentional negative reviews or fake bot accounts.")
-                elif fakes > (total * 0.4):
-                    st.warning("### ⚠️ VERDICT: UNTRUSTWORTHY DATA")
-                    st.write("Nearly half of the reviews match patterns of non-human generation.")
-                else:
-                    st.success("### ✅ VERDICT: HIGH INTEGRITY")
-                    st.write("Most reviews appear organic and written by actual users.")
-        else:
-            st.warning("Please enter a product name.")
+                # Visual Explanation (LIME)
+                with st.expander("🔍 See Feature Importance (LIME)"):
+                    explainer = LimeTextExplainer(class_names=['Fake', 'Real'])
+                    exp = explainer.explain_instance(res["cleaned_text"], c.predict_proba, num_features=10)
+                    components

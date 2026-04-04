@@ -6,3 +6,6 @@ scikit-learn
 lime
 playwright
 nltk
+undetected-chromedriver
+beautifulsoup4
+selenium

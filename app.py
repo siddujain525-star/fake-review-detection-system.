@@ -12,53 +12,35 @@ from sklearn.pipeline import make_pipeline
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="AI Review Analyser", layout="wide", page_icon="🛡️")
 
-import os
-
-# --- 1. LOAD MODEL & ASSETS ---
-# This ensures we find the folder regardless of where the server runs from
+# --- 1. CLOUD-SAFE LOAD MODEL & ASSETS ---
+# Absolute pathing is required because the working directory on Streamlit Cloud can be inconsistent
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(BASE_DIR, "model", "fake_review_model.pkl")
 
 @st.cache_resource
 def load_model_assets():
     if not os.path.exists(MODEL_PATH):
-        # This will show up in your Streamlit logs
-        st.error(f"File not found: {MODEL_PATH}")
-        return None, None
+        st.error(f"❌ Model file NOT found at: {MODEL_PATH}")
+        st.stop()
 
     try:
-        # Load the saved object
         loaded_data = joblib.load(MODEL_PATH)
-        
-        # DEBUG: If your pkl has (model, vectorizer) as a tuple/list
+        # Check if pkl contains (model, vectorizer) tuple or single pipeline
         if isinstance(loaded_data, (tuple, list)) and len(loaded_data) == 2:
             return loaded_data[0], loaded_data[1]
-        
-        # If your pkl IS the model and you load vectorizer separately, 
-        # or if it's a single pipeline object:
         return loaded_data, None 
-        
     except Exception as e:
         st.error(f"Internal Load Error: {e}")
-        return None, None
+        st.stop()
 
-# Initialize
 model, vectorizer = load_model_assets()
 
-# If loading failed, stop the app gracefully so you can see the error
-if model is None:
-    st.warning("⚠️ Model could not be initialized. Check your 'model/' folder on GitHub.")
-    st.stop()
-
-# Create the pipeline for LIME
-# If your 'model' already includes the vectorizer (a scikit-learn Pipeline), 
-# you don't need make_pipeline.
+# Build pipeline for analysis
 try:
     if vectorizer is not None:
         c = make_pipeline(vectorizer, model)
     else:
-        # Assuming the loaded model is already a Pipeline
-        c = model 
+        c = model  # Assumes it was already a Pipeline
 except Exception as e:
     st.error(f"Pipeline Creation Error: {e}")
     st.stop()
@@ -71,27 +53,20 @@ def run_analysis(review_text, rating=None):
     if len(words) == 0:
         return None
 
-    # AI Prediction
     probs = c.predict_proba([cleaned])[0]
     prediction_index = np.argmax(probs) # 0 = Fake (CG), 1 = Real (OR)
     ai_real_confidence = probs[1] * 100
     
-    # Heuristics (Uniqueness & Length)
     unique_ratio = len(set(words)) / len(words)
-    avg_word_len = sum(len(w) for w in words) / len(words)
-
-    # Final Verdict Logic
-    # Flag as fake if AI says so OR if text is extremely repetitive
     is_fake = (prediction_index == 0) or (unique_ratio < 0.15)
     
-    # --- BEHAVIORAL ANALYSIS (Intentional Misinformation) ---
+    # BEHAVIORAL ANALYSIS: Detecting "Intentional Misinformation"
+    # Flags human-written text that has a mismatch between sentiment and rating
     intentional_malice = False
     if rating is not None:
         malicious_keywords = ['bad', 'worst', 'scam', 'fake', 'trash', 'waste', 'cheap', 'fraud']
-        # Scenario: Human-written (Real) but 1-star rating with aggressive hate speech
         if prediction_index == 1 and rating <= 2.0 and any(kw in cleaned.lower() for kw in malicious_keywords):
             intentional_malice = True
-        # Scenario: Human-written (Real) but 5-star rating using 'waste' (Sarcasm)
         if prediction_index == 1 and rating >= 4.5 and "waste" in cleaned.lower():
             intentional_malice = True
 
@@ -99,39 +74,66 @@ def run_analysis(review_text, rating=None):
         "is_fake": is_fake,
         "intentional": intentional_malice,
         "confidence": ai_real_confidence,
-        "unique_ratio": unique_ratio,
-        "avg_word_len": avg_word_len,
-        "prediction_index": prediction_index,
         "cleaned_text": cleaned
     }
 
-# --- 3. UI HEADER ---
+# --- 3. UI LAYOUT ---
 st.title("🛡️ AI Product Integrity System")
-st.markdown("Detecting computer-generated spam and intentional human misinformation.")
+st.markdown("Enter a product name to analyze live reviews for bot-spam and intentional misinformation.")
 
-tab1, tab2 = st.tabs(["📝 Single Review Check", "🔍 Live Product Analysis"])
+tab1, tab2 = st.tabs(["📝 Single Review Check", "🌐 Global Product Analysis"])
 
-# --- TAB 1: MANUAL INPUT ---
 with tab1:
-    st.subheader("Analyze a Single Review")
+    st.subheader("Manual Analysis")
     manual_review = st.text_area("Paste a review here:", height=150, key="manual_input")
-    
     if st.button("Analyze Review", key="manual_btn"):
         if manual_review:
             res = run_analysis(manual_review)
             if res:
-                col1, col2 = st.columns(2)
-                with col1:
-                    if res["is_fake"]:
-                        st.error("### 🚩 VERDICT: FAKE / SUSPICIOUS")
-                    else:
-                        st.success("### ✅ VERDICT: GENUINE")
-                
-                with col2:
-                    st.metric("AI Real Confidence", f"{res['confidence']:.1f}%")
-                
-                # Visual Explanation (LIME)
-                with st.expander("🔍 See Feature Importance (LIME)"):
-                    explainer = LimeTextExplainer(class_names=['Fake', 'Real'])
-                    exp = explainer.explain_instance(res["cleaned_text"], c.predict_proba, num_features=10)
-                    components
+                if res["is_fake"]: st.error("### 🚩 VERDICT: FAKE")
+                else: st.success("### ✅ VERDICT: GENUINE")
+                st.metric("AI Confidence", f"{res['confidence']:.1f}%")
+
+with tab2:
+    st.subheader("Live Multi-Site Search")
+    product_name = st.text_input("Enter Product Name (e.g. 'Logitech Mouse'):", key="p_name")
+
+    if st.button("Search & Analyze Across Platforms", key="search_btn"):
+        if product_name:
+            with st.spinner(f"Scraping Amazon for '{product_name}'..."):
+                scraped_data = scrape_amazon_reviews(product_name)
+            
+            if not scraped_data:
+                st.error("No reviews found. Amazon may be blocking the request.")
+                if os.path.exists("bot_check.png"):
+                    st.image("bot_check.png", caption="Last Browser View: Check for CAPTCHA")
+            else:
+                total = len(scraped_data)
+                fakes = 0
+                malice = 0
+                table_rows = []
+
+                for item in scraped_data:
+                    analysis = run_analysis(item['text'], rating=item['rating'])
+                    if not analysis: continue
+                    if analysis['is_fake']: fakes += 1
+                    if analysis['intentional']: malice += 1
+                    
+                    table_rows.append({
+                        "Rating": f"{item['rating']} ⭐",
+                        "Review Snippet": item['text'][:80] + "...",
+                        "AI Verdict": "🚩 FAKE" if analysis['is_fake'] else "✅ REAL",
+                        "Behavioral Alert": "⚠️ MALICIOUS" if analysis['intentional'] else "Normal"
+                    })
+
+                st.divider()
+                st.header(f"Trust Report for: {product_name}")
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Reviews Analyzed", total)
+                col2.metric("Authenticity Score", f"{int(((total-fakes)/total)*100)}%")
+                col3.metric("Malicious Intent Found", malice)
+
+                st.subheader("📑 Detailed Breakdown")
+                st.table(pd.DataFrame(table_rows))
+        else:
+            st.warning("Please enter a product name.")
